@@ -133,15 +133,15 @@ void CpersonTarget::getPositionEstimate(Cpoint3dCov & est)
 // 	
 // }
 
-void CpersonTarget::predict(double dT, Cpoint3d & predictedPoint)
-{
-	// to do 
-}	
-
-void CpersonTarget::predict(double dT, Cpoint3d & extraPoint, Cpoint3d & predictedPoint)
-{
-        // to do
-}
+// void CpersonTarget::predict(double dT, Cpoint3d & predictedPoint)
+// {
+// 	// to do 
+// }	
+// 
+// void CpersonTarget::predict(double dT, Cpoint3d & extraPoint, Cpoint3d & predictedPoint)
+// {
+//         // to do
+// }
 
 void CpersonTarget::resetMatchScores()
 {
@@ -158,11 +158,12 @@ void CpersonTarget::resetAssociationDecisions()
         for (unsigned int ii=0; ii<NUM_DETECTORS; ii++) aDecisions[ii].clear();
 }
 
-void CpersonTarget::resizeAssociationDecisions(unsigned int nLegsDet, unsigned int nBodyDet, unsigned int nFaceDet)
+void CpersonTarget::resizeAssociationDecisions(const unsigned int nLegsDet, const unsigned int nBodyDet, const unsigned int nFaceDet, const unsigned int nBody3dDet)
 {
         aDecisions[LEGS].resize(nLegsDet);
         aDecisions[BODY].resize(nBodyDet);
         aDecisions[FACE].resize(nFaceDet);
+        aDecisions[BODY3D].resize(nBody3dDet);
 }
 
 double CpersonTarget::associationProb(Cpoint3d & pDet)
@@ -189,9 +190,11 @@ void CpersonTarget::addEstimateToTrack()
 void CpersonTarget::print()
 {
 	std::list<filterEstimate>::iterator iiE;
+      
+      CpersonParticleFilter::print();
 	
-	std::cout << "Target ID: " << id << std::endl;
-      std::cout << "countVisuallyCorrected: " << countVisuallyCorrected << std::endl;
+// 	std::cout << "Target ID: " << id << std::endl;
+//       std::cout << "countVisuallyCorrected: " << countVisuallyCorrected << std::endl;
 // 	for (iiE=track.begin();iiE!=track.end();iiE++)
 // 	{
 // 		std::cout << "   "; iiE->ts.print(); std::cout << std::endl;

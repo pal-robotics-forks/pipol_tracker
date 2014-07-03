@@ -12,6 +12,7 @@ CpeopleTracker::~CpeopleTracker()
 {
 	laserDetSet.clear();
 	bodyDetSet.clear();
+      body3dDetSet.clear();
 	targetList.clear();
 }		
 
@@ -34,7 +35,8 @@ void CpeopleTracker::setDefaultParameters()
 	filterParams.initDeltaXY = INIT_DELTA_XY;
 	filterParams.initDeltaVxy = INIT_DELTA_VXY;
 	filterParams.sigmaResamplingXY = SIGMA_FIXED_RESAMPLING_XY;
-	filterParams.sigmaResamplingVxy = SIGMA_FIXED_RESAMPLING_VXY;
+	filterParams.sigmaRatioResamplingVxy = SIGMA_RATIO_RESAMPLING_VXY;
+      filterParams.sigmaMinResamplingVxy = SIGMA_MIN_RESAMPLING_VXY;
 	filterParams.personRadius = PERSON_RADIUS;
 	filterParams.matchingLegsAlpha = MATCHING_LEGS_ALPHA;
 	filterParams.matchingLegsBeta = MATCHING_LEGS_BETA;
@@ -76,24 +78,13 @@ void CpeopleTracker::setFilterParameters(const pFilterParameters & pfp)
 	filterParams.initDeltaXY = pfp.initDeltaXY;
 	filterParams.initDeltaVxy = pfp.initDeltaVxy;
 	filterParams.sigmaResamplingXY = pfp.sigmaResamplingXY;
-	filterParams.sigmaResamplingVxy = pfp.sigmaResamplingVxy;
+	filterParams.sigmaRatioResamplingVxy = pfp.sigmaRatioResamplingVxy;
+      filterParams.sigmaMinResamplingVxy = pfp.sigmaMinResamplingVxy;
 	filterParams.personRadius = pfp.personRadius;
 	filterParams.matchingLegsAlpha = pfp.matchingLegsAlpha; 
 	filterParams.matchingLegsBeta = pfp.matchingLegsBeta; 
 	filterParams.matchingBearingAlpha = pfp.matchingBearingAlpha;
 	filterParams.matchingBearingBeta = pfp.matchingBearingBeta;
-}
-
-// void CpeopleTracker::setOnBoardCamPose(Cposition3d & camP)
-// {
-//       this->camINbase = camP;
-//       std::cout << "CpeopleTracker: Camera pose in base link is: "; 
-//       this->camINbase.printPosition();
-// }
-
-void CpeopleTracker::setOnBoardCamCalMatrix()
-{
-      std::cout << "CpeopleTracker: Camera calibration matrix is: " << std::endl; 
 }
 
 void CpeopleTracker::setFollowMeTargetId(int fmtid)
@@ -176,7 +167,6 @@ void CpeopleTracker::addDetection(Cpoint3dObservation & newDet)
 	dist = newDet.point.norm();
       azimut = fabs(atan2(newDet.point.getY(),newDet.point.getX()));
 	if ( (dist >= params.minDetectionDistance) && (dist <= params.maxDetectionDistance) && (azimut < params.maxDetectionAzimut) )
-      //if ( (dist >= params.minDetectionDistance) && (dist <= params.maxDetectionDistance) )
 	{
 		newDet.setId(nextDetectionId[LEGS]);
 		laserDetSet.push_back(newDet);
@@ -196,6 +186,13 @@ void CpeopleTracker::addDetection(CfaceObservation & newDet)
       newDet.setId(nextDetectionId[FACE]);
       faceDetSet.push_back(newDet);
       nextDetectionId[FACE]++;      
+}
+
+void CpeopleTracker::addDetectionBody3d(Cpoint3dObservation & newDet)
+{
+      newDet.setId(nextDetectionId[BODY3D]);
+      body3dDetSet.push_back(newDet);
+      nextDetectionId[BODY3D]++;    
 }
 
 void CpeopleTracker::setTLDdetection(CbodyObservation & newDet)
@@ -241,6 +238,10 @@ void CpeopleTracker::resetDetectionSets(int detId)
                   faceDetSet.clear(); 
                   nextDetectionId[FACE] = 1;
                   break;
+            case BODY3D: 
+                  body3dDetSet.clear(); 
+                  nextDetectionId[BODY3D] = 1;
+                  break;                  
             case TLD:
                   tldDetection.bbW = 0;
                   break;
@@ -300,280 +301,336 @@ void CpeopleTracker::computeOcclusions()
 
 void CpeopleTracker::updateAssociationTables()
 {
-	std::list<Cpoint3dObservation>::iterator jjL, kkL, llL;
-	std::list<CbodyObservation>::iterator jjB, kkB;
-      std::list<CfaceObservation>::iterator jjF, kkF;
-	std::list<CpersonTarget>::iterator iiT, llT;
-	double matchingValue, assocProb;
+    std::list<Cpoint3dObservation>::iterator jjL, kkL, llL, jjB3d, kkB3d;
+    std::list<CbodyObservation>::iterator jjB, kkB;
+    std::list<CfaceObservation>::iterator jjF, kkF;
+    std::list<CpersonTarget>::iterator iiT, llT;
+    double matchingValue, assocProb;
     unsigned int ii = 0;
     unsigned int jj = 0;
     unsigned int ll = 0;
-	decisionElement de;
-	std::list<decisionElement> deList;
-	std::list<decisionElement>::iterator k1E, k2E;
+    decisionElement de;
+    std::list<decisionElement> deList;
+    std::list<decisionElement>::iterator k1E, k2E;
 
-	//resets matching and association tables
-	for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
-	{
-		iiT->resetMatchScores();
-		iiT->resetAssociationProbs();
-		iiT->resetAssociationDecisions();
-	}
+    //resets matching and association tables
+    for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
+    {
+        iiT->resetMatchScores();
+        iiT->resetAssociationProbs();
+        iiT->resetAssociationDecisions();
+    }
 	
-	//Resizes aDecisions vectors
-	for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
-		iiT->resizeAssociationDecisions(laserDetSet.size(), bodyDetSet.size(), faceDetSet.size());	
+    //Resizes aDecisions vectors
+    for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
+        iiT->resizeAssociationDecisions(laserDetSet.size(), bodyDetSet.size(), faceDetSet.size(), body3dDetSet.size());	
+    
+    //1A. LEG DETECTOR. Matching: for each LEG detection, compute matching score to each target
+    for (jjL=laserDetSet.begin();jjL!=laserDetSet.end();jjL++)
+    {
+        for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
+        {
+            matchingValue = iiT->legMatchingFunction(jjL->point);
+            iiT->matchScores[LEGS].push_back(matchingValue);
+            //std::cout << "LD" << jjL->getId() << ", T" << iiT->getId() << ": match: " << matchingValue << std::endl;
+        }
+    }
 	
-	
-	//1A. LEG DETECTOR. Matching: for each LEG detection, compute matching score to each target
-	for (jjL=laserDetSet.begin();jjL!=laserDetSet.end();jjL++)
-	{
-		for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
-		{
-			matchingValue = iiT->legMatchingFunction(jjL->point);
-			iiT->matchScores[LEGS].push_back(matchingValue);
-			//std::cout << "LD" << iiD->getId() << ", F" << iiT->getTargetId() << ": match: " << matchingValue << std::endl;
-		}
-	}
-	
-      //1B. LEG DETECTOR. Association Probability: for each leg detection, computes association probability to each target
-//       for (jjL=laserDetSet.begin();jjL!=laserDetSet.end();jjL++)
-//       {
-//             for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
-//             {
-//                   assocProb = 1;
-//                   for (kkL=laserDetSet.begin(),ii=0;kkL!=laserDetSet.end();kkL++,ii++)
-//                   {
-//                         if(kkL!=jjL) //product of all negative matching events
-//                         {
-//                               assocProb *= ( 1 - iiT->matchScores[LEGS].at(ii));
-//                         }
-//                         else //contribution of the positive event
-//                         {
-//                               assocProb *= iiT->matchScores[LEGS].at(ii);
-//                         }
-//                   }
-//                   iiT->aProbs[LEGS].push_back(assocProb);
-//                   //iiT->aProbs[LEGS].push_back((1-iiT->pOcclusion)*assocProb);
-// 		}
-// 	}
-      for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
-      {
-            for (jjL=laserDetSet.begin(),jj=0;jjL!=laserDetSet.end();jjL++,jj++)
+    //1B. LEG DETECTOR. Association Probability: for each leg detection, computes association probability to each target
+    for (iiT=targetList.begin();iiT!=targetList.end();iiT++) //target ii 
+    {
+        for (jjL=laserDetSet.begin(),jj=0;jjL!=laserDetSet.end();jjL++,jj++) //detection jj
+        {
+            assocProb = 1;
+            for (llL=laserDetSet.begin(),ll=0;llL!=laserDetSet.end();llL++,ll++)
             {
-                  assocProb = 1;
-                  for (llL=laserDetSet.begin(),ll=0;llL!=laserDetSet.end();llL++,ll++)
-                  {
-                        if( llL==jjL ) //contribution of the positive event
-                        {
-                              assocProb *= iiT->matchScores[LEGS].at(ll);
-                        }
-                        else //product of all negative matching events
-                        {
-                              assocProb *= ( 1 - iiT->matchScores[LEGS].at(ll));
-                        }
-                  }
-                  for (llT=targetList.begin();llT!=targetList.end();llT++)
-                  {
-                        if( llT!=iiT ) //product of all negative matching events
-                        {
-                              assocProb *= ( 1 - llT->matchScores[LEGS].at(jj));
-                        }
-                  }
-                  iiT->aProbs[LEGS].push_back(assocProb);
+                if( llL==jjL ) //contribution of the positive event
+                {
+                    assocProb *= iiT->matchScores[LEGS].at(ll);
+                }
+                else //product of all negative matching events , target ii against other detections
+                {
+                    assocProb *= ( 1 - iiT->matchScores[LEGS].at(ll));
+                }
             }
-      }
+            for (llT=targetList.begin();llT!=targetList.end();llT++)
+            {
+                if( llT!=iiT ) //product of all negative matching events, detection jj against other targets
+                {
+                    assocProb *= ( 1 - llT->matchScores[LEGS].at(jj));
+                }
+            }
+            iiT->aProbs[LEGS].push_back(assocProb);//associates ii target with jj detection
+        }
+    }
       
-      //1C. LEG DETECTOR. Association decision: for each leg detection decides to which target is associated
-      //1C-a. First, build a list
-      deList.clear();
-      for (iiT=targetList.begin(),ii=0;iiT!=targetList.end();iiT++, ii++)
-      {
-            for (jjL=laserDetSet.begin(),jj=0;jjL!=laserDetSet.end();jjL++, jj++)
+    //1C. LEG DETECTOR. Association decision: for each leg detection decides to which target is associated
+    //1C-a. First, build a list
+    deList.clear();
+    for (iiT=targetList.begin(),ii=0;iiT!=targetList.end();iiT++, ii++)
+    {
+        for (jjL=laserDetSet.begin(),jj=0;jjL!=laserDetSet.end();jjL++, jj++)
+        {
+            if (iiT->aProbs[LEGS].at(jj) > params.minAssociationProb)
             {
-                  if (iiT->aProbs[LEGS].at(jj) > params.minAssociationProb)
-                  {
-                        de.aProb = iiT->aProbs[LEGS].at(jj);
-                        de.targetIdx = ii;
-                        de.detectionIdx = jj;
-                        de.assigned = false;
-                        deList.push_back(de);
-                  }
+                de.aProb = iiT->aProbs[LEGS].at(jj);
+                de.targetIdx = ii;
+                de.detectionIdx = jj;
+                de.assigned = false;
+                deList.push_back(de);
             }
-      }
+        }
+    }
 
-      //1C-b. Sorts the list following aProbs field
-      deList.sort();
+    //1C-b. Sorts the list following aProbs field
+    deList.sort();
 		
-	//1C-c. Sets Association decisions starting from the highest probabilistic event 
-	for (k1E = deList.begin(); k1E != deList.end(); k1E++ )
-	{
-		if ( !k1E->assigned )
-		{
-			ii = k1E->targetIdx;
-			jj = k1E->detectionIdx;
-			setAssociationDecision(LEGS,ii,jj); //sets association decision
-		}
-		for (k2E = k1E; k2E != deList.end(); k2E++ )
-		{
-			if ( (k2E->targetIdx == ii) || (k2E->detectionIdx == jj) )
-			{
-				k2E->assigned = true; //Mark target ii and detection jj as assigned
-			}
-		}
-	}
+    //1C-c. Sets Association decisions starting from the highest probabilistic event 
+    for (k1E = deList.begin(); k1E != deList.end(); k1E++ )
+    {
+        if ( !k1E->assigned )
+        {
+            ii = k1E->targetIdx;
+            jj = k1E->detectionIdx;
+            setAssociationDecision(LEGS,ii,jj); //sets association decision
+        }
+        for (k2E = k1E; k2E != deList.end(); k2E++ )
+        {
+            if ( (k2E->targetIdx == ii) || (k2E->detectionIdx == jj) )
+            {
+                k2E->assigned = true; //Mark target ii and detection jj as assigned
+            }
+        }
+    }
 	
-	//2A. BODY DETECTOR. Matching: for each BODY detection, compute matching score to each filter
-	for (jjB=bodyDetSet.begin();jjB!=bodyDetSet.end();jjB++)
-	{
-		for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
-		{
-			matchingValue = iiT->bodyMatchingFunction(jjB->direction);
-			iiT->matchScores[BODY].push_back(matchingValue);
-		}
-	}
+    //2A. BODY DETECTOR. Matching: for each BODY detection, compute matching score to each filter
+    for (jjB=bodyDetSet.begin();jjB!=bodyDetSet.end();jjB++)
+    {
+        for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
+        {
+                matchingValue = iiT->bodyMatchingFunction(jjB->direction);
+                iiT->matchScores[BODY].push_back(matchingValue);
+        }
+    }
+    
+    //2B. BODY DETECTOR. Association Probability: for each body detection, computes association probability to each filter
+    for (jjB=bodyDetSet.begin();jjB!=bodyDetSet.end();jjB++)
+    {
+        for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
+        {
+            assocProb = 1;
+            for (kkB=bodyDetSet.begin(),ii=0;kkB!=bodyDetSet.end();kkB++,ii++)
+            {
+                if(kkB!=jjB) //product of all negative matching events
+                {
+                        assocProb *= ( 1 - iiT->matchScores[BODY].at(ii));
+                }
+                else //contribution of the positive event
+                {
+                        assocProb *= iiT->matchScores[BODY].at(ii);
+                }
+            }
+            iiT->aProbs[BODY].push_back((1-iiT->pOcclusion)*assocProb);
+        }
+    }
+
+    //2C. BODY DETECTOR. Association decision: for each body detection decides to which target is associated
+    //2C-a. First, build a list
+    deList.clear();
+    for (iiT=targetList.begin(),ii=0;iiT!=targetList.end();iiT++, ii++)
+    {
+        for (jjB=bodyDetSet.begin(),jj=0;jjB!=bodyDetSet.end();jjB++, jj++)
+        {
+            if (iiT->aProbs[BODY].at(jj) > params.minAssociationProb)
+            {
+                de.aProb = iiT->aProbs[BODY].at(jj);
+                de.targetIdx = ii;
+                de.detectionIdx = jj;
+                de.assigned = false;
+                deList.push_back(de);
+                
+                //debug 
+                //std::cout << "LINE: "<< __LINE__  << ", aProb: " << de.aProb << std::endl;
+                //std::cout << "params.minAssociationProb: " << params.minAssociationProb << std::endl;
+            }
+        }
+    }
 	
-	//2B. BODY DETECTOR. Association Probability: for each body detection, computes association probability to each filter
-	for (jjB=bodyDetSet.begin();jjB!=bodyDetSet.end();jjB++)
-	{
-		for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
-		{
-			assocProb = 1;
-			for (kkB=bodyDetSet.begin(),ii=0;kkB!=bodyDetSet.end();kkB++,ii++)
-			{
-				if(kkB!=jjB) //product of all negative matching events
-				{
-					assocProb *= ( 1 - iiT->matchScores[BODY].at(ii));
-				}
-				else //contribution of the positive event
-				{
-					assocProb *= iiT->matchScores[BODY].at(ii);
-				}
-			}
-			iiT->aProbs[BODY].push_back((1-iiT->pOcclusion)*assocProb);
-		}
-	}
-
-	//2C. BODY DETECTOR. Association decision: for each body detection decides to which target is associated
-	//2C-a. First, build a list
-	deList.clear();
-	for (iiT=targetList.begin(),ii=0;iiT!=targetList.end();iiT++, ii++)
-	{
-		for (jjB=bodyDetSet.begin(),jj=0;jjB!=bodyDetSet.end();jjB++, jj++)
-		{
-			if (iiT->aProbs[BODY].at(jj) > params.minAssociationProb)
-			{
-				de.aProb = iiT->aProbs[BODY].at(jj);
-				de.targetIdx = ii;
-				de.detectionIdx = jj;
-				de.assigned = false;
-				deList.push_back(de);
-                        
-                        //debug 
-                        //std::cout << "LINE: "<< __LINE__  << ", aProb: " << de.aProb << std::endl;
-                        //std::cout << "params.minAssociationProb: " << params.minAssociationProb << std::endl;
-			}
-		}
-	}
+    //2C-b. Sorts the list following aProbs field
+    deList.sort();
 	
-	//2C-b. Sorts the list following aProbs field
-	deList.sort();
-	
-	//2C-c. Sets Association decisions starting from the highest probabilistic event 
-	for (k1E = deList.begin(); k1E != deList.end(); k1E++ )
-	{
-		if ( !k1E->assigned )
-		{
-			ii = k1E->targetIdx;
-			jj = k1E->detectionIdx;
-			setAssociationDecision(BODY,ii,jj); //sets association decision
-                  //std::cout << "BODY associated: t" << ii << ", d" << jj << std::endl;
-		}
-		for (k2E = k1E; k2E != deList.end(); k2E++ )
-		{
-			if ( (k2E->targetIdx == ii) || (k2E->detectionIdx == jj) )
-			{
-				k2E->assigned = true; //Mark target ii and detection jj as assigned
-			}
-		}
-	}
-
-      //3A. FACE DETECTOR. Matching: for each FACE detection, compute matching score to each target
-      for (jjF=faceDetSet.begin();jjF!=faceDetSet.end();jjF++)
-      {
-            for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
+    //2C-c. Sets Association decisions starting from the highest probabilistic event 
+    for (k1E = deList.begin(); k1E != deList.end(); k1E++ )
+    {
+        if ( !k1E->assigned )
+        {
+            ii = k1E->targetIdx;
+            jj = k1E->detectionIdx;
+            setAssociationDecision(BODY,ii,jj); //sets association decision
+            //std::cout << "BODY associated: t" << ii << ", d" << jj << std::endl;
+        }
+        for (k2E = k1E; k2E != deList.end(); k2E++ )
+        {
+            if ( (k2E->targetIdx == ii) || (k2E->detectionIdx == jj) )
             {
-                  matchingValue = iiT->faceMatchingFunction(jjF->faceLoc);
-                  iiT->matchScores[FACE].push_back(matchingValue);
+                k2E->assigned = true; //Mark target ii and detection jj as assigned
             }
-      }
+        }
+    }
 
-      //3B. FACE DETECTOR. Association Probability: for each face detection, computes association probability to each target
-      for (jjF=faceDetSet.begin();jjF!=faceDetSet.end();jjF++)
-      {
-            for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
+    //3A. FACE DETECTOR. Matching: for each FACE detection, compute matching score to each target
+    for (jjF=faceDetSet.begin();jjF!=faceDetSet.end();jjF++)
+    {
+        for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
+        {
+            matchingValue = iiT->faceMatchingFunction(jjF->faceLoc);
+            iiT->matchScores[FACE].push_back(matchingValue);
+        }
+    }
+
+    //3B. FACE DETECTOR. Association Probability: for each face detection, computes association probability to each target
+    for (jjF=faceDetSet.begin();jjF!=faceDetSet.end();jjF++)
+    {
+        for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
+        {
+            assocProb = 1;
+            for (kkF=faceDetSet.begin(),ii=0;kkF!=faceDetSet.end();kkF++,ii++)
             {
-                  assocProb = 1;
-                  for (kkF=faceDetSet.begin(),ii=0;kkF!=faceDetSet.end();kkF++,ii++)
-                  {
-                        if(kkF!=jjF) //product of all negative matching events
-                        {
-                              assocProb *= ( 1 - iiT->matchScores[FACE].at(ii));
-                        }
-                        else //contribution of the positive event
-                        {
-                              assocProb *= iiT->matchScores[FACE].at(ii);
-                        }
-                  }
-                  iiT->aProbs[FACE].push_back(assocProb);
+                if(kkF!=jjF) //product of all negative matching events
+                {
+                    assocProb *= ( 1 - iiT->matchScores[FACE].at(ii));
+                }
+                else //contribution of the positive event
+                {
+                    assocProb *= iiT->matchScores[FACE].at(ii);
+                }
             }
-      }
+            iiT->aProbs[FACE].push_back(assocProb);
+        }
+    }
 
-      //3C. FACE DETECTOR. Association decision: for each face detection decides to which target is associated
-      //3C-a. First, build a list
-      deList.clear();
-      for (iiT=targetList.begin(),ii=0;iiT!=targetList.end();iiT++, ii++)
-      {
-            for (jjF=faceDetSet.begin(),jj=0;jjF!=faceDetSet.end();jjF++, jj++)
+    //3C. FACE DETECTOR. Association decision: for each face detection decides to which target is associated
+    //3C-a. First, build a list
+    deList.clear();
+    for (iiT=targetList.begin(),ii=0;iiT!=targetList.end();iiT++, ii++)
+    {
+        for (jjF=faceDetSet.begin(),jj=0;jjF!=faceDetSet.end();jjF++, jj++)
+        {
+            if (iiT->aProbs[FACE].at(jj) > params.minAssociationProb)
             {
-                  if (iiT->aProbs[FACE].at(jj) > params.minAssociationProb)
-                  {
-                        de.aProb = iiT->aProbs[FACE].at(jj);
-                        de.targetIdx = ii;
-                        de.detectionIdx = jj;
-                        de.assigned = false;
-                        deList.push_back(de);
-                  }
+                de.aProb = iiT->aProbs[FACE].at(jj);
+                de.targetIdx = ii;
+                de.detectionIdx = jj;
+                de.assigned = false;
+                deList.push_back(de);
             }
-      }
+        }
+    }
 
-      //3C-b. Sorts the list following aProbs field
-      deList.sort();
+    //3C-b. Sorts the list following aProbs field
+    deList.sort();
 
-      //3C-c. Sets Association decisions starting from the highest probabilistic event 
-      for (k1E = deList.begin(); k1E != deList.end(); k1E++ )
-      {
-            if ( !k1E->assigned )
+    //3C-c. Sets Association decisions starting from the highest probabilistic event 
+    for (k1E = deList.begin(); k1E != deList.end(); k1E++ )
+    {
+        if ( !k1E->assigned )
+        {
+            ii = k1E->targetIdx;
+            jj = k1E->detectionIdx;
+            setAssociationDecision(FACE,ii,jj); //sets association decision
+            //std::cout << "FACE associated: t" << ii << ", d" << jj << std::endl; 
+        }
+        for (k2E = k1E; k2E != deList.end(); k2E++ )
+        {
+            if ( (k2E->targetIdx == ii) || (k2E->detectionIdx == jj) )
             {
-                  ii = k1E->targetIdx;
-                  jj = k1E->detectionIdx;
-                  setAssociationDecision(FACE,ii,jj); //sets association decision
-                  //std::cout << "FACE associated: t" << ii << ", d" << jj << std::endl; 
+                k2E->assigned = true; //Mark target ii and detection jj as assigned
             }
-            for (k2E = k1E; k2E != deList.end(); k2E++ )
-            {
-                  if ( (k2E->targetIdx == ii) || (k2E->detectionIdx == jj) )
-                  {
-                        k2E->assigned = true; //Mark target ii and detection jj as assigned
-                  }
-            }
-      }
+        }
+    }
+    
+    //4A. BODY3D DETECTOR. Matching: for each BODY3D detection, compute matching score to each target
+    for (jjB3d=body3dDetSet.begin();jjB3d!=body3dDetSet.end();jjB3d++)
+    {
+        for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
+        {
+            //debugging
+            //std::cout << "B3dD" << jjB3d->getId() << ", T" << iiT->getId() << std::endl;
+            //jjB3d->point.printPoint();
+            //iiT->print();
+           
+            matchingValue = iiT->body3dMatchingFunction(jjB3d->point);
+            iiT->matchScores[BODY3D].push_back(matchingValue);
+            //std::cout << "B3dD" << jjB3d->getId() << ", T" << iiT->getId() << ": match: " << matchingValue << std::endl;
+        }
+    }
 
-	//frees memory allocated
-	deList.clear();
+    //4B. BODY3D DETECTOR. Association Probability: for each body3d detection, computes association probability to each target
+    for (jjB3d=body3dDetSet.begin();jjB3d!=body3dDetSet.end();jjB3d++)
+    {
+        for (iiT=targetList.begin();iiT!=targetList.end();iiT++)
+        {
+            assocProb = 1;
+            for (kkB3d=body3dDetSet.begin(),ii=0;kkB3d!=body3dDetSet.end();kkB3d++,ii++)
+            {
+                if(kkB3d!=jjB3d) //product of all negative matching events
+                {
+                        assocProb *= ( 1 - iiT->matchScores[BODY3D].at(ii));
+                }
+                else //contribution of the positive event
+                {
+                        assocProb *= iiT->matchScores[BODY3D].at(ii);
+                }
+            }
+            iiT->aProbs[BODY3D].push_back((1-iiT->pOcclusion)*assocProb);
+        }
+    }
+    
+    //4C. BODY3D DETECTOR. Association decision: for each body3d detection decides to which target is associated
+    //4C-a. First, build a list
+    deList.clear();
+    for (iiT=targetList.begin(),ii=0;iiT!=targetList.end();iiT++, ii++)
+    {
+        for (jjB3d=body3dDetSet.begin(),jj=0;jjB3d!=body3dDetSet.end();jjB3d++, jj++)
+        {
+            if (iiT->aProbs[BODY3D].at(jj) > params.minAssociationProb)
+            {
+                de.aProb = iiT->aProbs[BODY3D].at(jj);
+                de.targetIdx = ii;
+                de.detectionIdx = jj;
+                de.assigned = false;
+                deList.push_back(de);
+            }
+        }
+    }
       
-      //debug 
-      //for (iiT=targetList.begin();iiT!=targetList.end();iiT++) iiT->printTables();
+    //4C-b. Sorts the list following aProbs field
+    deList.sort();
+      
+    //4C-c. Sets Association decisions starting from the highest probabilistic event 
+    for (k1E = deList.begin(); k1E != deList.end(); k1E++ )
+    {
+        if ( !k1E->assigned )
+        {
+            ii = k1E->targetIdx;
+            jj = k1E->detectionIdx;
+            setAssociationDecision(BODY3D,ii,jj); //sets association decision
+            //std::cout << "BODY associated: t" << ii << ", d" << jj << std::endl;
+        }
+        for (k2E = k1E; k2E != deList.end(); k2E++ )
+        {
+            if ( (k2E->targetIdx == ii) || (k2E->detectionIdx == jj) )
+            {
+                k2E->assigned = true; //Mark target ii and detection jj as assigned
+            }
+        }
+    }
+    
+    //frees memory allocated
+    deList.clear();
+      
+    //debug 
+    //for (iiT=targetList.begin();iiT!=targetList.end();iiT++) iiT->printTables();
 }
 
 void CpeopleTracker::setAssociationDecision(unsigned int detId, unsigned int tIdx, unsigned int dIdx)
@@ -675,7 +732,6 @@ void CpeopleTracker::deleteFilters()
 	Cpoint3dCov iiTrckPos, jjTrckPos;
 	double dist;
       bool incrementToBeRemoved_ii;
-	//bool iiFilterDeleted, jjFilterDeleted;      
 	
 	//Delete filters that have status=TO_BE_REMOVED
 	for (iiF=targetList.begin();iiF!=targetList.end();iiF++)
@@ -714,8 +770,7 @@ void CpeopleTracker::deleteFilters()
             if (incrementToBeRemoved_ii) iiF->incrementToBeRemovedCounter();
             else iiF->resetToBeRemovedCounter();
       }
-	
-      
+	      
       /*
 	//removes filters that are closer between them. Keeps id of the oldest (lower id)
 	iiF=targetList.begin();
@@ -762,6 +817,7 @@ void CpeopleTracker::updateFilterEstimates()
 	for (iiF=targetList.begin();iiF!=targetList.end();iiF++)
 	{
 		iiF->updateEstimate();
+            iiF->setMotionMode();
 	}		
 }
 
@@ -797,12 +853,12 @@ void CpeopleTracker::propagateFilters()
 void CpeopleTracker::correctFilters()
 {
 	std::list<CpersonTarget>::iterator iiT;
-	std::list<Cpoint3dObservation>::iterator jjL;
+	std::list<Cpoint3dObservation>::iterator jjL, jjB3d;
 	std::list<CbodyObservation>::iterator jjB;
       std::list<CfaceObservation>::iterator jjF;
 	unsigned int numP,ii,jj;
-	bool associated_legs=false, associated_body=false, associated_face =false;
-	vector<double> ww_fusion, ww_legs, ww_body, ww_face;	
+	bool associated_legs = false, associated_body = false, associated_face = false, associated_body3d = false;
+	vector<double> ww_fusion, ww_legs, ww_body, ww_face, ww_body3d;	
 //       bool targetOccluded;
 		
 	for (iiT=targetList.begin(),ii=0;iiT!=targetList.end();iiT++,ii++)
@@ -810,8 +866,10 @@ void CpeopleTracker::correctFilters()
 		numP = iiT->getNP();
 		
 		//LEGS
-		ww_legs.reserve(numP);//init vector sizes
-		for (jj=0; jj<numP; jj++) ww_legs.push_back(0);//reset values //ALERT: do a resize before and here reset to 1's (without push_back) to avoid case !associated_legs
+// 		ww_legs.reserve(numP);//init vector sizes
+//          for (jj=0; jj<numP; jj++) ww_legs.push_back(0);//reset values //ALERT: do a resize before and here reset to 1's (without push_back) to avoid case !associated_legs
+            ww_legs.resize(numP);//init vector sizes
+            for (jj=0; jj<numP; jj++) ww_legs.at(jj) = 0;//reset values 
 		associated_legs = false;
 		for (jjL=laserDetSet.begin(),jj=0;jjL!=laserDetSet.end();jjL++,jj++)
 		{
@@ -821,14 +879,16 @@ void CpeopleTracker::correctFilters()
 				iiT->computeWeights(*jjL, ww_legs);
 			}
 		}
-		if (!associated_legs) 
+		if (!associated_legs) //if target iiT does not associate with any leg detection
 		{
 			for (ii=0; ii<numP; ii++) ww_legs.at(ii) = 1;//leg detection does not "shape" particle set
 		}
 		
 		//BODY
-		ww_body.reserve(numP);//init vector sizes
-		for (jj=0; jj<numP; jj++) ww_body.push_back(0);//reset values //ALERT: do a resize before, and here reset to 1's (without push_back) to avoid case !associated_body
+// 		ww_body.reserve(numP);//init vector sizes
+// 		for (jj=0; jj<numP; jj++) ww_body.push_back(0);//reset values //ALERT: do a resize before, and here reset to 1's (without push_back) to avoid case !associated_body
+            ww_body.resize(numP);//init vector sizes
+            for (jj=0; jj<numP; jj++) ww_body.at(jj) = 0;//reset values 
 		associated_body = false;
 		for (jjB=bodyDetSet.begin(),jj=0;jjB!=bodyDetSet.end();jjB++,jj++)
 		{
@@ -844,8 +904,10 @@ void CpeopleTracker::correctFilters()
 		}
 
             //FACE
-            ww_face.reserve(numP);//init vector sizes
-            for (jj=0; jj<numP; jj++) ww_face.push_back(0);//reset values //ALERT: do a resize before, and here reset to 1's (without push_back) to avoid case !associated_body
+//             ww_face.reserve(numP);//init vector sizes
+//             for (jj=0; jj<numP; jj++) ww_face.push_back(0);//reset values //ALERT: do a resize before, and here reset to 1's (without push_back) to avoid case !associated_body
+            ww_face.resize(numP);//init vector sizes
+            for (jj=0; jj<numP; jj++) ww_face.at(jj) = 0;//reset values
             associated_face = false;
             for (jjF=faceDetSet.begin(),jj=0;jjF!=faceDetSet.end();jjF++,jj++)
             {
@@ -860,14 +922,32 @@ void CpeopleTracker::correctFilters()
                   for (ii=0; ii<numP; ii++) ww_face.at(ii) = 1;//face detector does not correct ii-th target
             }
 
+            ww_body3d.resize(numP);//init vector sizes
+            for (jj=0; jj<numP; jj++) ww_body3d.at(jj) = 0;//reset values
+            associated_body3d = false;
+            for (jjB3d=body3dDetSet.begin(),jj=0;jjB3d!=body3dDetSet.end();jjB3d++,jj++)
+            {
+                  if ( iiT->aDecisions[BODY3D].at(jj) ) //face detection jj is associated with target ii
+                  {
+                        associated_body3d = true;
+                        iiT->computeWeightsBody3d(*jjB3d, ww_body3d);
+                  }
+            }
+            if (!associated_body3d) 
+            {
+                  for (ii=0; ii<numP; ii++) ww_body3d.at(ii) = 1;//face detector does not correct ii-th target
+            }            
+            
 		//Check whether the iiT target has been associated to some detection or not
-            if ( (associated_legs) || (associated_body) || (associated_face) )
+            if ( (associated_legs) || (associated_body) || (associated_face) || (associated_body3d) )
             {
                   ww_fusion.clear();
-                  ww_fusion.reserve(numP);
+                  //ww_fusion.reserve(numP);
+                  ww_fusion.resize(numP);
                   for (ii=0; ii<numP; ii++)
                   {
-                        ww_fusion.push_back( ww_legs.at(ii)*ww_body.at(ii)*ww_face.at(ii) );
+                        //ww_fusion.push_back( ww_legs.at(ii)*ww_body.at(ii)*ww_face.at(ii) );
+                        ww_fusion.at(ii) =  ww_legs.at(ii)*ww_body.at(ii)*ww_face.at(ii)*ww_body3d.at(ii);
                   }
                   iiT->setWeights(ww_fusion);
             }
@@ -908,6 +988,11 @@ std::list<Cpoint3dObservation> & CpeopleTracker::getLaserDetSet()
 std::list<CbodyObservation> & CpeopleTracker::getBodyDetSet()
 {
 	return bodyDetSet;
+}
+
+std::list<Cpoint3dObservation> & CpeopleTracker::getBody3dDetSet()
+{
+      return body3dDetSet;
 }
 
 void CpeopleTracker::setCurrentImage(cv::Mat & inImg)
@@ -998,7 +1083,7 @@ void CpeopleTracker::markBodies()
             bb.width = jjB->bbW;
             bb.height = jjB->bbH;
                 
-            //draws a green bounding box on the image according to detection jj
+            //draws a cyan bounding box on the image according to detection jj
             cv::rectangle(img, bb, cv::Scalar(0,255,255), 3);
       }
 }
@@ -1017,7 +1102,7 @@ void CpeopleTracker::markFaces()
             bb.width = iiF->bbW;
             bb.height = iiF->bbH;
                 
-            //draws an orange bounding box on the image according to detection iiF
+            //draws a yellow bounding box on the image according to detection iiF
             cv::rectangle(img, bb, cv::Scalar(255,255,0), 3);
       }
 }
@@ -1234,3 +1319,16 @@ void CpeopleTracker::removeCrossAssociatedParticles()
         }
 }
 */
+
+// void CpeopleTracker::setOnBoardCamPose(Cposition3d & camP)
+// {
+//       this->camINbase = camP;
+//       std::cout << "CpeopleTracker: Camera pose in base link is: "; 
+//       this->camINbase.printPosition();
+// }
+
+// void CpeopleTracker::setOnBoardCamCalMatrix()
+// {
+//       std::cout << "CpeopleTracker: Camera calibration matrix is: " << std::endl; 
+// }
+
